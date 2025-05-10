@@ -1,118 +1,185 @@
 import time
-import copy
-from typing import List, Optional
+import random
+from itertools import combinations
 
-Clause = List[int]
-CNFFormula = List[Clause]
+# --- Solver implementations ---
 
-
-def parse_formula() -> CNFFormula:
-
-    return [[1, -2], [2, 3], [-1, -3]]
-
-
-def resolution_solver(cnf: CNFFormula) -> bool:
-    clauses = set(frozenset(c) for c in cnf)
-
+def resolution_solver(cnf):
+    """
+    Resolution-based SAT solver.
+    Returns True if satisfiable, False if unsatisfiable.
+    """
+    clauses = set(cnf)
     new = set()
     while True:
-        pairs = [(c1, c2) for c1 in clauses for c2 in clauses if c1 != c2]
-        for (ci, cj) in pairs:
-            resolvents = resolve(ci, cj)
-            if frozenset() in resolvents:
-                return False
-            new.update(resolvents)
+        for ci, cj in combinations(clauses, 2):
+            for l in ci:
+                if -l in cj:
+                    resolvent = (ci.union(cj)) - {l, -l}
+                    if not resolvent:
+                        return False  # Derived empty clause => UNSAT
+                    new.add(frozenset(resolvent))
         if new.issubset(clauses):
-            return True
-        clauses.update(new)
+            return True  # No new clauses => SAT
+        clauses |= new
+        new.clear()
 
-
-def resolve(ci: frozenset, cj: frozenset) -> List[frozenset]:
+def dp_solver(cnf):
+    """
+    Davis–Putnam algorithm.
+    Returns True if satisfiable, False if unsatisfiable.
+    """
+    if not cnf:
+        return True
+    if any(len(c) == 0 for c in cnf):
+        return False
+    lit = next(iter(next(iter(cnf))))
+    var = abs(lit)
+    pos = [c for c in cnf if var in c]
+    neg = [c for c in cnf if -var in c]
+    others = [c for c in cnf if var not in c and -var not in c]
     resolvents = []
-    for literal in ci:
-        if -literal in cj:
-            resolvent = (ci.union(cj)) - {literal, -literal}
-            resolvents.append(frozenset(resolvent))
-    return resolvents
+    for c1 in pos:
+        for c2 in neg:
+            r = (c1.union(c2)) - {var, -var}
+            resolvents.append(frozenset(r))
+    return dp_solver(others + resolvents)
 
+def dpll_solver(cnf, assignment=None):
+    """
+    DPLL with unit propagation and pure literal elimination.
+    Returns True if satisfiable, False if unsatisfiable.
+    """
+    if assignment is None:
+        assignment = {}
+    # Unit propagation
+    while True:
+        units = [c for c in cnf if len(c) == 1]
+        if not units:
+            break
+        l = next(iter(units[0]))
+        var, val = abs(l), (l > 0)
+        assignment[var] = val
+        new_cnf = []
+        for c in cnf:
+            if l in c:
+                continue
+            if -l in c:
+                reduced = frozenset(x for x in c if x != -l)
+                if not reduced:
+                    return False
+                new_cnf.append(reduced)
+            else:
+                new_cnf.append(c)
+        cnf = new_cnf
 
-def dp_solver(cnf: CNFFormula) -> bool:
-    return dp_recursive(cnf, [])
+    # Pure literal elimination
+    lits = {l for c in cnf for l in c}
+    pures = [l for l in lits if -l not in lits]
+    for l in pures:
+        var, val = abs(l), (l > 0)
+        assignment[var] = val
+        cnf = [c for c in cnf if l not in c]
 
-
-def dp_recursive(cnf: CNFFormula, assignment: List[int]) -> bool:
-    if [] in cnf:
+    if not cnf:
+        return True
+    if any(len(c) == 0 for c in cnf):
         return False
-    if not cnf:
-        return True
 
-    variable = abs(cnf[0][0])
-    new_cnf_true = simplify(cnf, variable)
-    new_cnf_false = simplify(cnf, -variable)
+    # Branch on a literal
+    lit = next(iter(next(iter(cnf))))
+    var = abs(lit)
+    for val in (True, False):
+        branch_lit = var if val else -var
+        new_cnf = []
+        for c in cnf:
+            if branch_lit in c:
+                continue
+            if -branch_lit in c:
+                reduced = frozenset(x for x in c if x != -branch_lit)
+                new_cnf.append(reduced)
+            else:
+                new_cnf.append(c)
+        if dpll_solver(new_cnf, dict(assignment)):
+            return True
+    return False
 
-    return dp_recursive(new_cnf_true, assignment + [variable]) or dp_recursive(new_cnf_false, assignment + [-variable])
+# --- CNF Generators ---
 
+def generate_random_cnf(n_vars, n_clauses, clause_size=3):
+    cnf = []
+    for _ in range(n_clauses):
+        clause = set()
+        while len(clause) < clause_size:
+            var = random.randint(1, n_vars)
+            lit = var if random.choice((True, False)) else -var
+            clause.add(lit)
+        cnf.append(frozenset(clause))
+    return cnf
 
-def simplify(cnf: CNFFormula, literal: int) -> CNFFormula:
-    new_cnf = []
-    for clause in cnf:
-        if literal in clause:
-            continue
-        new_clause = [x for x in clause if x != -literal]
-        new_cnf.append(new_clause)
-    return new_cnf
+# --- Some hand-crafted examples ---
 
+examples = {
+    "Simple SAT": [
+        frozenset([1, -2]),
+        frozenset([2, 3]),
+        frozenset([-1, -3]),
+    ],
+    "Simple UNSAT": [
+        frozenset([1]),
+        frozenset([-1]),
+    ],
+    "XOR (unsat by 2-SAT)": [
+        frozenset([1, 2]),
+        frozenset([-1, -2]),
+        frozenset([1, -2]),
+        frozenset([-1, 2]),
+    ],
+    "Pigeonhole 2 pigeons → 1 hole UNSAT": [
+        # pigeon 1 in hole A or B
+        frozenset([1, 2]),
+        # pigeon 2 in hole A or B
+        frozenset([3, 4]),
+        # no two pigeons in the same hole:
+        # ¬(p1,A ∧ p2,A) → (-1 or -3)
+        frozenset([-1, -3]),
+        # ¬(p1,B ∧ p2,B) → (-2 or -4)
+        frozenset([-2, -4]),
+    ]
+}
 
-def dpll_solver(cnf: CNFFormula) -> bool:
-    return dpll_recursive(cnf, [])
+# --- Benchmark harness ---
 
-
-def dpll_recursive(cnf: CNFFormula, assignment: List[int]) -> bool:
-    if [] in cnf:
-        return False
-    if not cnf:
-        return True
-
-
-    unit_clauses = [c for c in cnf if len(c) == 1]
-    while unit_clauses:
-        unit = unit_clauses[0][0]
-        assignment.append(unit)
-        cnf = simplify(cnf, unit)
-        if [] in cnf:
-            return False
-        unit_clauses = [c for c in cnf if len(c) == 1]
-
-
-    literals = {lit for clause in cnf for lit in clause}
-    for lit in list(literals):
-        if -lit not in literals:
-            cnf = simplify(cnf, lit)
-            assignment.append(lit)
-
-    if not cnf:
-        return True
-
-    variable = abs(cnf[0][0])
-    return dpll_recursive(simplify(cnf, variable), assignment + [variable]) or \
-           dpll_recursive(simplify(cnf, -variable), assignment + [-variable])
-
-
-def benchmark_solver(name: str, solver_func, cnf: CNFFormula):
-    cnf_copy = copy.deepcopy(cnf)
+def run_solver(name, solver, cnf):
     start = time.time()
-    result = solver_func(cnf_copy)
-    duration = time.time() - start
-    print(f"{name:10s} | Result: {'SAT' if result else 'UNSAT'} | Time: {duration:.6f} seconds")
-
-
-def main():
-    cnf = parse_formula()
-    print("Running SAT solvers on formula:", cnf)
-    benchmark_solver("Resolution", resolution_solver, cnf)
-    benchmark_solver("DP", dp_solver, cnf)
-    benchmark_solver("DPLL", dpll_solver, cnf)
-
+    res = solver(cnf)
+    elapsed = time.time() - start
+    return "SAT" if res else "UNSAT", elapsed
 
 if __name__ == "__main__":
-    main()
+    # 1) Hand-crafted examples
+    print("=== Hand-Crafted Examples ===")
+    for desc, cnf in examples.items():
+        print(f"\n{desc}:")
+        for name, sol in (("Resolution", resolution_solver),
+                          ("DP", dp_solver),
+                          ("DPLL", dpll_solver)):
+            sat_unsat, t = run_solver(name, sol, cnf)
+            print(f"  {name:<10} → {sat_unsat} in {t:.6f}s")
+
+    # 2) Random benchmarks: vary vars, clauses, clause size
+    print("\n=== Random Benchmarks ===")
+    random.seed(42)
+    for n_vars, n_clauses, c_size in [
+        (4, 6, 3),
+        (6, 12, 3),
+        (8, 16, 3),
+        (10, 40, 4),
+    ]:
+        cnf = generate_random_cnf(n_vars, n_clauses, clause_size=c_size)
+        print(f"\n{n_vars} vars, {n_clauses} clauses, size={c_size}")
+        for name, sol in (("Resolution", resolution_solver),
+                          ("DP", dp_solver),
+                          ("DPLL", dpll_solver)):
+            sat_unsat, t = run_solver(name, sol, cnf)
+            print(f"  {name:<10} → {sat_unsat} in {t:.6f}s")
